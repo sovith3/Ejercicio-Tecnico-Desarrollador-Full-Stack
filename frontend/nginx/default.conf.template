@@ -1,0 +1,62 @@
+# InvoiceHub Web: sirve la SPA compilada y actua de proxy inverso hacia la API .NET.
+# ${API_UPSTREAM} lo sustituye el entrypoint de nginx (envsubst) al arrancar el contenedor, por lo que
+# la URL de la API se cambia reiniciando el contenedor y no reconstruyendo la imagen.
+
+server {
+    listen 80;
+    server_name _;
+
+    root /usr/share/nginx/html;
+    index index.html;
+    charset utf-8;
+
+    # Sonda de salud del propio contenedor web (la usa el healthcheck de la imagen). El healthcheck
+    # apunta a 127.0.0.1 y no a "localhost" porque nginx escucha en IPv4 y "localhost" resuelve a ::1.
+    location = /healthz {
+        access_log off;
+        default_type text/plain;
+        return 200 "ok\n";
+    }
+
+    # API .NET: el navegador consume el mismo origen, asi que no hay CORS ni URL absoluta incrustada.
+    location /api/ {
+        proxy_pass ${API_UPSTREAM}/api/;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_read_timeout 60s;
+    }
+
+    # Sondas de salud y documentos de OpenAPI de la API, expuestos bajo el mismo origen.
+    location = /health {
+        proxy_pass ${API_UPSTREAM}/health;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    }
+
+    location /health/ {
+        proxy_pass ${API_UPSTREAM}/health/;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    }
+
+    location /swagger {
+        proxy_pass ${API_UPSTREAM}/swagger;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    }
+
+    # Estaticos del bundle: el nombre incluye hash de contenido, por eso se cachean con holgura.
+    location ~* \.(?:js|css|woff2?|svg|png|jpg|jpeg|ico)$ {
+        expires 7d;
+        add_header Cache-Control "public, max-age=604800, immutable";
+        try_files $uri =404;
+    }
+
+    # SPA: cualquier ruta del cliente resuelve al index generado por Vite.
+    location / {
+        try_files $uri $uri/ /index.html;
+    }
+}

@@ -1,0 +1,10 @@
+# Contexto de construccion del panel: nada de lo que no intervenga en el bundle.
+node_modules
+dist
+.git
+.gitignore
+npm-debug.log*
+npm-install.log
+*.done
+Dockerfile
+.dockerignore

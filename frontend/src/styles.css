@@ -1,0 +1,50 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Paleta en canales RGB para que Tailwind pueda aplicar opacidad (ver tailwind.config.js). */
+:root {
+  --c-paper: 241 244 247;
+  --c-surface: 255 255 255;
+  --c-raised: 248 250 252;
+  --c-line: 222 228 236;
+  --c-ink: 15 23 32;
+  --c-muted: 100 116 139;
+  --c-accent: 16 90 86;
+  --c-accent-soft: 219 240 238;
+  --c-accent-ink: 255 255 255;
+}
+
+.dark {
+  --c-paper: 12 16 21;
+  --c-surface: 20 26 33;
+  --c-raised: 26 33 42;
+  --c-line: 45 55 66;
+  --c-ink: 233 238 243;
+  --c-muted: 148 163 178;
+  --c-accent: 45 178 165;
+  --c-accent-soft: 22 51 50;
+  --c-accent-ink: 6 20 19;
+}
+
+@layer base {
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+
+  body {
+    @apply bg-paper text-ink antialiased;
+  }
+
+  ::selection {
+    @apply bg-accent-soft text-ink;
+  }
+}
+
+@layer utilities {
+  .tabular {
+    font-variant-numeric: tabular-nums;
+  }
+}

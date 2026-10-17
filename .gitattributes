@@ -1,0 +1,30 @@
+# Normalizacion de finales de linea: el repositorio se clona y compila igual en Windows, Linux o macOS.
+# Los scripts SQL se leen desde disco y de su contenido se deriva la huella del esquema; por eso se
+# versionan siempre con LF.
+* text=auto eol=lf
+
+*.cs        text eol=lf
+*.csproj    text eol=lf
+*.sln       text eol=lf
+*.props     text eol=lf
+*.targets   text eol=lf
+*.sql       text eol=lf
+*.json      text eol=lf
+*.md        text eol=lf
+*.yml       text eol=lf
+*.yaml      text eol=lf
+*.ts        text eol=lf
+*.tsx       text eol=lf
+*.js        text eol=lf
+*.css       text eol=lf
+*.html      text eol=lf
+Dockerfile  text eol=lf
+*.sh        text eol=lf
+*.http      text eol=lf
+
+# Binarios: sin conversion.
+*.png       binary
+*.jpg       binary
+*.ico       binary
+*.zip       binary
+*.db        binary

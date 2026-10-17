@@ -1,0 +1,181 @@
+# =============================================================================================
+# InvoiceHub · stack completo: Redis (cache) + API .NET 8 + panel React/Vite (nginx)
+# ---------------------------------------------------------------------------------------------
+# Todos los valores provienen del unico archivo .env de la raiz, que docker compose carga solo:
+# puertos publicados e internos, contrasena de Redis, rutas de la base SQLite y del JSON de origen,
+# credenciales del administrador y variables VITE_* que se compilan dentro del bundle del panel.
+#
+#   docker compose up --build -d
+#   docker compose ps
+#   docker compose down          (conserva volumenes)   /   docker compose down -v   (limpia todo)
+#
+# Servicios (los nombres van sin punto inicial porque el nombre del servicio es un hostname y
+# ".net8-backend" no es una etiqueta DNS valida dentro de la red de compose):
+#   redis-cache    : redis:7-alpine asegurado con --requirepass; publicado solo en loopback.
+#   net8-backend   : API en http://localhost:5145 (Swagger en /swagger), cache Redis con contrasena.
+#   react-frontend : SPA en http://localhost:5173; nginx proxya /api hacia la API.
+# =============================================================================================
+
+services:
+  # -------------------------------------------------------------------------------------------
+  # Cache de lectura. La contrasena se aplica con --requirepass desde REDIS_PASSWORD y la API la
+  # recibe por partida doble: la cadena estandar ConnectionStrings__RedisConnection y los campos
+  # tipados Cache__*. Si Redis no responde, el adaptador degrada a memoria sin detener la API.
+  # -------------------------------------------------------------------------------------------
+  redis-cache:
+    image: redis:7-alpine
+    container_name: invoicehub-redis
+    restart: unless-stopped
+    command:
+      - redis-server
+      - --requirepass
+      - ${REDIS_PASSWORD:?Define REDIS_PASSWORD en el archivo .env de la raiz}
+      - --appendonly
+      - "yes"
+      - --save
+      - "60"
+      - "1"
+      - --loglevel
+      - warning
+    environment:
+      TZ: ${TZ:-America/Santiago}
+    ports:
+      # Loopback por omision: la cache se inspecciona con redis-cli desde el host sin exponerse a la red.
+      - "${REDIS_BIND_ADDRESS:-127.0.0.1}:${REDIS_HOST_PORT:-6379}:${REDIS_PORT:-6379}"
+    volumes:
+      - invoicehub-cache:/data
+    healthcheck:
+      # La sonda se autentica: con requirepass, "redis-cli ping" sin -a responde NOAUTH.
+      test: ["CMD-SHELL", "redis-cli --no-auth-warning -a '${REDIS_PASSWORD}' ping | grep -q PONG"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+    networks:
+      - invoicehub
+
+  # -------------------------------------------------------------------------------------------
+  # API .NET 8. El puerto se inyecta con ASPNETCORE_URLS, la cache con la jerarquia de doble guion
+  # bajo (ConnectionStrings__RedisConnection) y el resto de la configuracion con Seccion__Clave.
+  # -------------------------------------------------------------------------------------------
+  net8-backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: invoicehub-api:1.0.0
+    container_name: invoicehub-api
+    restart: unless-stopped
+    environment:
+      # Host .NET: puerto de escucha y entorno.
+      ASPNETCORE_ENVIRONMENT: ${ASPNETCORE_ENVIRONMENT:-Production}
+      ASPNETCORE_URLS: http://+:${API_INTERNAL_PORT:-8080}
+      DOTNET_EnableDiagnostics: "0"
+      TZ: ${TZ:-America/Santiago}
+
+      # Redis: una sola cadena de conexion (jerarquia estandar de .NET). El host apunta al nombre
+      # del servicio en la red de compose y la contrasena sale de REDIS_PASSWORD.
+      ConnectionStrings__RedisConnection: ${REDIS_HOST:-redis-cache}:${REDIS_PORT:-6379},password=${REDIS_PASSWORD},defaultDatabase=${REDIS_DATABASE:-0},ssl=${REDIS_SSL:-false},abortConnect=false,connectRetry=1,connectTimeout=2000
+
+      # Mismos datos en la configuracion tipada: respaldo si la cadena anterior no llega y, ademas,
+      # documentacion viva de cada parametro de la cache.
+      Cache__Provider: ${CACHE_PROVIDER:-Redis}
+      Cache__UseRedis: ${CACHE_USE_REDIS:-true}
+      Cache__Host: ${REDIS_HOST:-redis-cache}
+      Cache__Port: ${REDIS_PORT:-6379}
+      Cache__User: ${REDIS_USER:-}
+      Cache__Password: ${REDIS_PASSWORD:-}
+      Cache__Database: ${REDIS_DATABASE:-0}
+      Cache__UseSsl: ${REDIS_SSL:-false}
+      Cache__InstanceName: ${REDIS_INSTANCE_NAME:-invoicehub:}
+      Cache__InvoiceTimeToLiveSeconds: ${CACHE_INVOICE_TTL_SECONDS:-30}
+      Cache__ReportTimeToLiveSeconds: ${CACHE_REPORT_TTL_SECONDS:-60}
+
+      # Base de datos SQLite y carpeta de scripts SQL (ambas rutas configurables).
+      Database__FilePath: ${DATABASE_FILE_PATH:-data/invoicehub.db}
+      Database__ScriptsPath: ${DATABASE_SCRIPTS_CONTAINER_PATH:-database/scripts}
+      Database__RecreateOnSchemaChange: ${DATABASE_RECREATE_ON_SCHEMA_CHANGE:-true}
+      Database__SeedAdminUser: ${DATABASE_SEED_ADMIN_USER:-true}
+
+      # Archivo JSON del enunciado: se importa en el arranque solo si la base esta vacia.
+      SourceData__FilePath: ${SOURCE_JSON_CONTAINER_PATH:-/app/source/bd_exam_invoices.json}
+      SourceData__ImportOnStartup: ${SOURCE_IMPORT_ON_STARTUP:-true}
+      SourceData__MaxFileSizeBytes: ${SOURCE_MAX_FILE_SIZE_BYTES:-67108864}
+
+      # Reloj de negocio: la mora y los vencimientos se evaluan con la fecha de Santiago.
+      Clock__TimeZoneId: ${CLOCK_TIMEZONE:-America/Santiago}
+
+      # Firma JWT y usuario administrador (el panel usa estas credenciales para escribir).
+      Security__Issuer: ${SECURITY_ISSUER:-InvoiceHub}
+      Security__Audience: ${SECURITY_AUDIENCE:-InvoiceHub.Client}
+      Security__Key: ${SECURITY_JWT_KEY:-invoicehub-development-signing-key-change-me-2f4a91}
+      Security__TokenLifetimeMinutes: ${SECURITY_TOKEN_LIFETIME_MINUTES:-480}
+      Security__RequireAuthentication: ${SECURITY_REQUIRE_AUTHENTICATION:-false}
+      Security__AdminUsername: ${ADMIN_USERNAME:-admin}
+      Security__AdminPassword: ${ADMIN_PASSWORD:-InvoiceHub.2026}
+      Security__AdminDisplayName: ${ADMIN_DISPLAY_NAME:-Administrador InvoiceHub}
+      Security__AdminRole: ${ADMIN_ROLE:-Administrator}
+
+      # Host de la API.
+      Api__SwaggerEnabled: ${SWAGGER_ENABLED:-true}
+      Api__UseHttpsRedirection: ${HTTPS_REDIRECTION:-false}
+      Api__ServeStaticFiles: ${API_SERVE_STATIC_FILES:-true}
+
+      # CORS para la interfaz web (origenes del .env, uno por cada indice de la jerarquia de .NET).
+      Cors__AllowedOrigins__0: ${CORS_ORIGIN_WEB:-http://localhost:5173}
+      Cors__AllowedOrigins__1: ${CORS_ORIGIN_WEB_PREVIEW:-http://localhost:4173}
+      Cors__AllowedOrigins__2: ${CORS_ORIGIN_API:-http://localhost:5145}
+    ports:
+      - "${API_BIND_ADDRESS:-0.0.0.0}:${API_HOST_PORT:-5145}:${API_INTERNAL_PORT:-8080}"
+    volumes:
+      # Base SQLite persistente: un reinicio no pierde la importacion.
+      - invoicehub-data:/app/data
+      # Origen JSON desde el host (solo lectura): cambiar el archivo no exige reconstruir la imagen.
+      - ${SOURCE_JSON_HOST_PATH:-./bd_exam_invoices.json}:${SOURCE_JSON_CONTAINER_PATH:-/app/source/bd_exam_invoices.json}:ro
+      # Scripts SQL desde el host (solo lectura): ajustar una consulta no exige reconstruir la imagen.
+      - ${SCRIPTS_HOST_PATH:-./backend/database/scripts}:${DATABASE_SCRIPTS_CONTAINER_PATH:-/app/database/scripts}:ro
+    depends_on:
+      # La API arranca cuando la cache acepta conexiones autenticadas.
+      redis-cache:
+        condition: service_healthy
+    networks:
+      - invoicehub
+
+  # -------------------------------------------------------------------------------------------
+  # Panel React + Vite servido por nginx. Vite resuelve import.meta.env en tiempo de compilacion,
+  # por eso las variables VITE_* se pasan como build.args; la URL de la API, en cambio, la resuelve
+  # nginx en tiempo de ejecucion con ${API_UPSTREAM} (proxy inverso de mismo origen, sin CORS).
+  # -------------------------------------------------------------------------------------------
+  react-frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        VITE_API_BASE_URL: ${VITE_API_BASE_URL:-/api}
+        VITE_API_TIMEOUT_MS: ${VITE_API_TIMEOUT_MS:-15000}
+        VITE_APP_TITLE: "${VITE_APP_TITLE:-Facturia · Control de facturacion}"
+        VITE_ADMIN_USER: ${VITE_ADMIN_USER:-admin}
+        VITE_ADMIN_PASSWORD: ${VITE_ADMIN_PASSWORD:-InvoiceHub.2026}
+    image: invoicehub-web:1.0.0
+    container_name: invoicehub-web
+    restart: unless-stopped
+    environment:
+      # Destino del proxy /api de nginx dentro de la red de compose.
+      API_UPSTREAM: ${WEB_API_UPSTREAM:-http://net8-backend:8080}
+      TZ: ${TZ:-America/Santiago}
+    ports:
+      - "${WEB_BIND_ADDRESS:-0.0.0.0}:${WEB_HOST_PORT:-5173}:${WEB_INTERNAL_PORT:-80}"
+    depends_on:
+      # El panel espera a que la API este saludable para que el proxy responda de inmediato.
+      net8-backend:
+        condition: service_healthy
+    networks:
+      - invoicehub
+
+volumes:
+  # Base SQLite y cache de Redis: los datos sobreviven a "docker compose down".
+  invoicehub-data:
+  invoicehub-cache:
+
+networks:
+  invoicehub:
+    driver: bridge
